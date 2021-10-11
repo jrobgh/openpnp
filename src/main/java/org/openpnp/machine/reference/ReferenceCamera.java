@@ -19,7 +19,6 @@
 
 package org.openpnp.machine.reference;
 
-import java.awt.Color;
 import java.awt.event.ActionEvent;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
@@ -49,10 +48,8 @@ import org.openpnp.gui.support.Icons;
 import org.openpnp.gui.support.PropertySheetWizardAdapter;
 import org.openpnp.gui.wizards.CameraConfigurationWizard;
 import org.openpnp.gui.wizards.CameraVisionConfigurationWizard;
-import org.openpnp.machine.reference.camera.AutoFocusProvider;
 import org.openpnp.machine.reference.camera.OpenPnpCaptureCamera;
 import org.openpnp.machine.reference.camera.SimulatedUpCamera;
-import org.openpnp.machine.reference.camera.wizards.ReferenceCameraWhiteBalanceConfigurationWizard;
 import org.openpnp.machine.reference.wizards.ReferenceCameraCalibrationConfigurationWizard;
 import org.openpnp.machine.reference.wizards.ReferenceCameraPositionConfigurationWizard;
 import org.openpnp.machine.reference.wizards.ReferenceCameraTransformsConfigurationWizard;
@@ -62,18 +59,12 @@ import org.openpnp.model.Length;
 import org.openpnp.model.LengthUnit;
 import org.openpnp.model.Location;
 import org.openpnp.model.Solutions;
-import org.openpnp.model.Solutions.Milestone;
 import org.openpnp.model.Solutions.Severity;
 import org.openpnp.spi.Actuator;
 import org.openpnp.spi.Camera;
-import org.openpnp.spi.FocusProvider;
 import org.openpnp.spi.Head;
 import org.openpnp.spi.Machine;
-import org.openpnp.util.Collect;
 import org.openpnp.util.OpenCvUtils;
-import org.openpnp.util.SimpleGraph;
-import org.openpnp.util.UiUtils;
-import org.openpnp.util.VisionUtils;
 import org.openpnp.vision.LensCalibration;
 import org.openpnp.vision.LensCalibration.LensModel;
 import org.openpnp.vision.LensCalibration.Pattern;
@@ -89,10 +80,10 @@ public abstract class ReferenceCamera extends AbstractBroadcastingCamera impleme
     }
 
     @Attribute(required = false)
-    private int captureTryCount = 4;
+    private int captureTryCount = 2;
 
     @Attribute(required = false)
-    private int captureTryTimeoutMs = 2000;
+    private int captureTryTimeoutMs = 3000;
 
     @Element(required = false)
     private Location headOffsets = new Location(LengthUnit.Millimeters);
@@ -121,31 +112,13 @@ public abstract class ReferenceCamera extends AbstractBroadcastingCamera impleme
 
     @Attribute(required = false)
     protected int cropHeight = 0;
-
+    
     @Attribute(required = false)
     protected int scaleWidth = 0;
-
+    
     @Attribute(required = false)
     protected int scaleHeight = 0;
-
-    @Attribute(required = false)
-    protected double redBalance = 1.0; 
-
-    @Attribute(required = false)
-    protected double greenBalance = 1.0; 
-
-    @Attribute(required = false)
-    protected double blueBalance = 1.0; 
-
-    @Attribute(required = false)
-    protected double redGamma = 1.0; 
-
-    @Attribute(required = false)
-    protected double greenGamma = 1.0; 
-
-    @Attribute(required = false)
-    protected double blueGamma = 1.0; 
-
+    
     @Attribute(required = false)
     protected boolean deinterlace;
 
@@ -157,45 +130,16 @@ public abstract class ReferenceCamera extends AbstractBroadcastingCamera impleme
     @Attribute(required = false)
     private boolean allowMachineActuators = false;
 
-    @Attribute(required = false)
-    private FocusSensingMethod focusSensingMethod = FocusSensingMethod.None;
-
-    @Element(required = false)
-    protected FocusProvider focusProvider = new AutoFocusProvider();
-
-    @Attribute(required = false)
-    private double whiteBalanceLeadFractile = 0.8;
-
-    @Attribute(required = false)
-    private double whiteBalanceClipFractile = 0.99;
-
-    @Attribute(required = false)
-    private double whiteBalanceGammaFractile = 0.5;
-
-    @Element(required = false)
-    private double[] redColorMap;
-    @Element(required = false)
-    private double[] greenColorMap;
-    @Element(required = false)
-    private double[] blueColorMap;
-
-
     private boolean calibrating;
     private CalibrationCallback calibrationCallback;
     private int calibrationCountGoal = 25;
 
     private Mat undistortionMap1;
     private Mat undistortionMap2;
-    private Mat lut;
 
     private LensCalibration lensCalibration;
 
     private Actuator lightActuator;
-
-    public enum FocusSensingMethod {
-        None,
-        AutoFocus
-    }
 
     public ReferenceCamera() {
         super();
@@ -219,17 +163,26 @@ public abstract class ReferenceCamera extends AbstractBroadcastingCamera impleme
     /**
      * Captures an image using captureTransformed() and performs scripting and lighting events
      * before and after the capture.
-     * @throws Exception 
      */
     @Override
-    public BufferedImage capture() throws Exception {
-        Map<String, Object> globals = new HashMap<>();
-        globals.put("camera", this);
-        Configuration.get().getScripting().on("Camera.BeforeCapture", globals);
-
+    public BufferedImage capture() {
+        try {
+            Map<String, Object> globals = new HashMap<>();
+            globals.put("camera", this);
+            Configuration.get().getScripting().on("Camera.BeforeCapture", globals);
+        }
+        catch (Exception e) {
+            Logger.warn(e);
+        }
         BufferedImage image = captureTransformed();
-
-        Configuration.get().getScripting().on("Camera.AfterCapture", globals);
+        try {
+            Map<String, Object> globals = new HashMap<>();
+            globals.put("camera", this);
+            Configuration.get().getScripting().on("Camera.AfterCapture", globals);
+        }
+        catch (Exception e) {
+            Logger.warn(e);
+        }
         return image;
     }
     
@@ -288,7 +241,7 @@ public abstract class ReferenceCamera extends AbstractBroadcastingCamera impleme
             Logger.trace("Camera {} failed to return an image. Retrying.", this);
             Thread.yield();
         }
-        Logger.warn("Camera {} failed to return an image after {} tries.", this, i);
+        //Logger.warn("Camera {} failed to return an image after {} tries.", this, CAPTURE_RETRY_COUNT);
         return getCaptureErrorImage();
     }
 
@@ -397,7 +350,7 @@ public abstract class ReferenceCamera extends AbstractBroadcastingCamera impleme
 
     public void setCropWidth(int cropWidth) {
         this.cropWidth = cropWidth;
-        viewHasChanged();
+//        viewHasChanged();
     }
 
     public int getCropHeight() {
@@ -406,7 +359,7 @@ public abstract class ReferenceCamera extends AbstractBroadcastingCamera impleme
 
     public void setCropHeight(int cropHeight) {
         this.cropHeight = cropHeight;
-        viewHasChanged();
+//        viewHasChanged();
     }
 
     public int getScaleWidth() {
@@ -426,98 +379,13 @@ public abstract class ReferenceCamera extends AbstractBroadcastingCamera impleme
         this.scaleHeight = scaleHeight;
         viewHasChanged();
     }
-
-    public double getRedBalance() {
-        return redBalance;
-    }
-
-    public void setRedBalance(double redBalance) {
-        Object oldValue = this.redBalance;
-        this.redBalance = redBalance;
-        resetColorMaps();
-        firePropertyChange("redBalance", oldValue, redBalance);
-        firePropertyChange("colorBalanceGraph", null, getColorBalanceGraph());
-        cameraViewHasChanged(null);
-    }
-
-    public double getGreenBalance() {
-        return greenBalance;
-    }
-
-    public void setGreenBalance(double greenBalance) {
-        Object oldValue = this.greenBalance;
-        this.greenBalance = greenBalance;
-        resetColorMaps();
-        firePropertyChange("greenBalance", oldValue, greenBalance);
-        firePropertyChange("colorBalanceGraph", null, getColorBalanceGraph());
-        cameraViewHasChanged(null);
-    }
-
-    public double getBlueBalance() {
-        return blueBalance;
-    }
-
-    public void setBlueBalance(double blueBalance) {
-        Object oldValue = this.blueBalance;
-        this.blueBalance = blueBalance;
-        resetColorMaps();
-        firePropertyChange("blueBalance", oldValue, blueBalance);
-        firePropertyChange("colorBalanceGraph", null, getColorBalanceGraph());
-        cameraViewHasChanged(null);
-    }
-
-
-    public double getRedGamma() {
-        return redGamma;
-    }
-
-    public void setRedGamma(double redGamma) {
-        Object oldValue = this.redGamma;
-        this.redGamma = redGamma;
-        resetColorMaps();
-        firePropertyChange("redGamma", oldValue, redGamma);
-        firePropertyChange("colorBalanceGraph", null, getColorBalanceGraph());
-        cameraViewHasChanged(null);
-    }
-
-    public double getGreenGamma() {
-        return greenGamma;
-    }
-
-    public void setGreenGamma(double greenGamma) {
-        Object oldValue = this.greenGamma;
-        this.greenGamma = greenGamma;
-        resetColorMaps();
-        firePropertyChange("greenGamma", oldValue, greenGamma);
-        firePropertyChange("colorBalanceGraph", null, getColorBalanceGraph());
-        cameraViewHasChanged(null);
-    }
-
-    public double getBlueGamma() {
-        return blueGamma;
-    }
-
-    public void setBlueGamma(double blueGamma) {
-        Object oldValue = this.blueGamma;
-        this.blueGamma = blueGamma;
-        resetColorMaps();
-        firePropertyChange("blueGamma", oldValue, blueGamma);
-        firePropertyChange("colorBalanceGraph", null, getColorBalanceGraph());
-        cameraViewHasChanged(null);
-    }
-
+    
     public boolean isDeinterlace() {
         return isDeinterlaced();
     }
 
     public void setDeinterlace(boolean deinterlace) {
         this.deinterlace = deinterlace;
-    }
-
-    public boolean isWhiteBalanced() {
-        return redBalance != 1.0 || greenBalance != 1.0 || blueBalance != 1.0
-                || redGamma != 1.0 || greenGamma != 1.0 || blueGamma != 1.0
-                || (redColorMap != null & blueColorMap != null & greenColorMap != null); 
     }
 
     @Override
@@ -538,26 +406,6 @@ public abstract class ReferenceCamera extends AbstractBroadcastingCamera impleme
         this.allowMachineActuators = allowMachineActuators;
     }
 
-    public FocusSensingMethod getFocusSensingMethod() {
-        return focusSensingMethod;
-    }
-
-    public void setFocusSensingMethod(FocusSensingMethod partHeightVisionMethod) {
-        this.focusSensingMethod = partHeightVisionMethod;
-        // if we ever expand the methods this would be the point where another method's focusProvider
-        // would be instantiated.
-    }
-
-    @Override
-    public FocusProvider getFocusProvider() {
-        if (getFocusSensingMethod() != FocusSensingMethod.None) {
-            return focusProvider;
-        }
-        else {
-            return null;
-        }
-    }
-
     protected BufferedImage transformImage(BufferedImage image) {
         try {
             if (image == null) {
@@ -565,25 +413,19 @@ public abstract class ReferenceCamera extends AbstractBroadcastingCamera impleme
             }
 
             // We do skip the convert to and from Mat if no transforms are needed.
-            // But we must enter while calibrating. 
-            if (isDeinterlaced()
-                || isCropped()
-                || isWhiteBalanced() 
-                || isCalibrating()
-                || isUndistorted()
-                || isScaled()
+            if (isCropped() 
+                || isDeinterlaced() 
                 || isRotated()
                 || isOffset()
-                || isFlipped()
-                || isWhiteBalanced()) {
+                || isScaled()
+                || isUndistorted()
+                || isFlipped()) {
 
                 Mat mat = OpenCvUtils.toMat(image);
 
                 mat = deinterlace(mat);
 
                 mat = crop(mat);
-
-                mat = whiteBalance(mat);
 
                 mat = calibrate(mat);
 
@@ -612,301 +454,6 @@ public abstract class ReferenceCamera extends AbstractBroadcastingCamera impleme
             Logger.error(e);
         }
         return image;
-    }
-
-    private Mat whiteBalance(Mat mat) {
-        if (isWhiteBalanced() && mat.channels() == 3) {
-            initWhiteBalanceLut();
-            Mat whiteBalanced = new Mat();
-            Core.LUT(mat, lut, whiteBalanced);
-            mat.release();
-            mat = whiteBalanced;
-        }
-        return mat;
-    }
-
-    protected void initWhiteBalanceLut() {
-        if (lut == null) {
-            byte[] data = new byte[3];
-            lut = new Mat(256, 1, CvType.CV_8UC3);
-            if (redColorMap != null & blueColorMap != null & greenColorMap != null) {
-                final int levels = redColorMap.length;
-                final int range = 256/levels;
-                final int halfRange = range/2;
-                for (int i = 0; i < 256; i++) {
-                    // Indexed BGR.
-                    int level1 = (i+halfRange)/range;
-                    int level0 = level1 - 1;
-                    double weight1 = ((i + halfRange) % range)/(double)range; 
-                    double weight0 = 1.0 - weight1;
-                    if (level0 < 0) {
-                        level0 = 0;
-                        weight0 = -weight0;
-                    }
-                    if (level1 >= levels) {
-                        level1 = levels-2;
-                        weight0 += 2*weight1; 
-                        weight1 = -weight1;
-                    }
-                    data[2] = (byte)Math.max(0, Math.min(255, (redColorMap[level0]*weight0 + redColorMap[level1]*weight1)*255.0));
-                    data[1] = (byte)Math.max(0, Math.min(255, (greenColorMap[level0]*weight0 + greenColorMap[level1]*weight1)*255.0));
-                    data[0] = (byte)Math.max(0, Math.min(255, (blueColorMap[level0]*weight0 + blueColorMap[level1]*weight1)*255.0));
-                    lut.put(i, 0, data);
-                }
-            }
-            else {
-                for (int i = 0; i < 256; i++) {
-                    // Indexed BGR.
-                    data[2] = (byte)Math.min(255, Math.pow(i/255.0*redBalance, 1/redGamma)*255.0);
-                    data[1] = (byte)Math.min(255, Math.pow(i/255.0*greenBalance, 1/greenGamma)*255.0);
-                    data[0] = (byte)Math.min(255, Math.pow(i/255.0*blueBalance, 1/blueGamma)*255.0);
-                    lut.put(i, 0, data);
-                }
-            }
-        }
-    }
-
-    public void autoAdjustWhiteBalance(boolean averaged) throws Exception {
-        // Switch it off to get a neutral image.
-        resetWhiteBalance();
-        // Capture.
-        BufferedImage image = lightSettleAndCapture();
-        // Calculate the histogram.
-        long[][] histogram = VisionUtils.computeImageHistogram(image);
-        // Analyze the percentiles.
-        long pixels = image.getHeight()*image.getWidth();
-        double percentileGamma[] = new double[3];
-        double percentileLead[] = new double[3];
-        double percentileClip[] = new double[3];
-        double sum[] = new double[3];
-        double n[] = new double[3];
-        for (int ch = 0; ch < 3; ch++) {
-            long accumulated = 0;
-            for (int bin = 0; bin < 256; bin++) {
-                long value = histogram[ch][bin];
-                accumulated += value;
-                if (accumulated < pixels*whiteBalanceGammaFractile) {
-                    percentileGamma[ch] = bin;
-                }
-                if (accumulated < pixels*whiteBalanceLeadFractile) {
-                    percentileLead[ch] = bin;
-                }
-                else {
-                    sum[ch] += bin*value;
-                    n[ch] += value;
-                }
-                if (accumulated < pixels*whiteBalanceClipFractile) {
-                    percentileClip[ch] = bin;
-                }
-            }
-            sum[ch] /= n[ch];
-        }
-        // Adapt the other channels to the one with the highest signal in the result.
-        double resultLead[] = averaged ? sum : percentileLead;
-        double lead = Math.max(Math.max(resultLead[0], resultLead[1]), resultLead[2]);
-        if (lead < 32) {
-            throw new Exception("The camera "+getName()+" exposure is too low!");
-        }
-
-        double r = lead/resultLead[0];
-        double g = lead/resultLead[1];
-        double b = lead/resultLead[2];
-
-        // We do not: Norm to the maximum clip percentile, but never amplify.
-        double clip = 1.0; //Math.max(1.0, Math.max(Math.max(r*percentileClip[0], g*percentileClip[1]), b*percentileClip[2])/255.0);
-
-        // Set the new balance.
-        setRedBalance(r/clip);
-        setGreenBalance(g/clip);
-        setBlueBalance(b/clip);
-        
-        // Scale the gamma percentile.
-        percentileGamma[0] *= r/clip/255; 
-        percentileGamma[1] *= g/clip/255; 
-        percentileGamma[2] *= b/clip/255;
-        
-        // Make the gamma match by percentile.
-        double midGamma = (percentileGamma[0] + percentileGamma[1] + percentileGamma[2])/3;
-        setRedGamma(Math.log(percentileGamma[0])/Math.log(midGamma));
-        setGreenGamma(Math.log(percentileGamma[1])/Math.log(midGamma));
-        setBlueGamma(Math.log(percentileGamma[2])/Math.log(midGamma));
-    }
-
-    public void autoAdjustWhiteBalanceMapped(int levels) throws Exception {
-        // Switch it off to get a neutral image.
-        resetWhiteBalance();
-        // Capture.
-        BufferedImage image = lightSettleAndCapture();
-        // Map the balance on various levels.
-        final int range = 256/levels;
-        final int halfRange = range/2;
-        final int clip = 254; 
-        final int balanceLimit = 4;
-        long[][] histogram = VisionUtils.computeImageHistogram(image);
-        double lead[] = new double[3];
-        long pixels = image.getHeight()*image.getWidth();
-        int fractileLead = 0;
-        for (int ch = 0; ch < 3; ch++) {
-            long accumulated = 0;
-            for (int bin = 0; bin < 256; bin++) {
-                long value = histogram[ch][bin];
-                accumulated += value;
-                if (accumulated > pixels*whiteBalanceLeadFractile) {
-                    lead[ch] = bin;
-                    if (bin > fractileLead) {
-                        fractileLead = bin;
-                    }
-                    break;
-                }
-            }
-        }
-        double amplify = fractileLead*3.0/(lead[0] + lead[1] + lead[2]);
-        long[][][] histogramAtLevel = new long[3][levels][255+range];
-        long[][] counts = new long[3][levels];
-        for (int y = 0; y < image.getHeight(); y++) {
-            for (int x = 0; x < image.getWidth(); x++) {
-                int rgb = image.getRGB(x, y);
-                int r = (rgb >> 16) & 0xff;
-                int g = (rgb >> 8) & 0xff;
-                int b = (rgb >> 0) & 0xff;
-                int lum = ((r >= clip || g >= clip || b >= clip) ? 255 // clip all when one is clipped 
-                        : (int)(amplify*(r+g+b)/3));
-                if (lum >= 1) {
-                    if (r >= 1 && lum/r < balanceLimit && r/lum < balanceLimit) {
-                        int level = r/range;
-                        int midLevel = level*range+halfRange;
-                        histogramAtLevel[0][level][Math.min(255, midLevel*lum/r)]++;
-                        counts[0][level]++;
-                    }
-                    if (g >= 1 && lum/g < balanceLimit && g/lum < balanceLimit) {
-                        int level = g/range;
-                        int midLevel = level*range+halfRange;
-                        histogramAtLevel[1][level][Math.min(255, midLevel*lum/g)]++;
-                        counts[1][level]++;
-                    }
-                    if (b >= 1 && lum/b < balanceLimit && b/lum < balanceLimit) {
-                        int level = b/range;
-                        int midLevel = level*range+halfRange;
-                        histogramAtLevel[2][level][Math.min(255, midLevel*lum/b)]++;
-                        counts[2][level]++;
-                    }
-                }
-            }
-        }
-        // Map the colors.
-        double [][] colorMap = new double[3][levels];
-        for (int ch = 0; ch < 3; ch++) {
-            for (int level = 0; level < levels; level++) {
-                long median = counts[ch][level]/2;
-                long accumulated = 0;
-                for (int bin = 0; bin < 256; bin++) {
-                    long value = histogramAtLevel[ch][level][bin];
-                    accumulated += value;
-                    if (accumulated > median) {
-                        colorMap[ch][level] = bin/255.0;
-                        break;
-                    }
-                }
-            }
-            // Sanity check
-            for (int level = 1; level < levels; level++) {
-                if (level == levels) {
-                    if (colorMap[ch][level] > colorMap[ch][level+1]) {
-                        // extrapolate
-                        colorMap[ch][level] = (colorMap[ch][level+1]*3 - colorMap[ch][level+2])/2;
-                    }
-                }
-                else if (colorMap[ch][level-1] > colorMap[ch][level]) {
-                    if (level+1 >= levels) {
-                        // extrapolate
-                        colorMap[ch][level] = (colorMap[ch][level-1]*3 - colorMap[ch][level-2])/2;
-                    }
-                    else {
-                        if (colorMap[ch][level-1] > colorMap[ch][level+1]) {
-                            throw new Exception("Image does not contain grayscales at level "+100*level/levels+" ... "+100*(level+1)/levels+"%.");
-//                            colorMap[ch][level] = colorMap[ch][level-1];
-                        }
-                        else {
-                        // Simply interpolate.
-                        colorMap[ch][level] = (colorMap[ch][level-1] + colorMap[ch][level+1])/2;
-                        }
-                    }
-                }
-            }
-        }
-
-        // As an approximation, compute the parametric white balance (as sort of feedback 
-        // for the user, and starting point for manual override).
-        autoAdjustWhiteBalance(false);
-        // But immediately reset the maps and LUT.
-        resetColorMaps();
-        // And assign our new color maps.
-        redColorMap = colorMap[0];
-        greenColorMap = colorMap[1];
-        blueColorMap = colorMap[2];
-        firePropertyChange("colorBalanceGraph", null, getColorBalanceGraph());
-        cameraViewHasChanged(null);
-    }
-
-    public SimpleGraph getColorBalanceGraph() {
-        final String COLOR_GRAPH = "C"; 
-        SimpleGraph colorGraph = new SimpleGraph();
-        colorGraph.setRelativePaddingLeft(0.1);
-        colorGraph.setRelativePaddingRight(0.05);
-        SimpleGraph.DataScale scale =  colorGraph.getScale(COLOR_GRAPH);
-        scale.setRelativePaddingTop(0.05);
-        scale.setRelativePaddingBottom(0.1);
-        scale.setColor(SimpleGraph.getDefaultGridColor());
-        scale.setSquareAspectRatio(true);
-        if (!isWhiteBalanced()) {
-            // Show identity.
-            SimpleGraph.DataRow lum = colorGraph.getRow(COLOR_GRAPH, "lum");
-            lum.setColor(SimpleGraph.getDefaultGridColor());
-            lum.recordDataPoint(0, 0);
-            lum.recordDataPoint(255, 255);
-            return colorGraph;
-        }
-        else {
-            // LUT graph.
-            SimpleGraph.DataRow red = colorGraph.getRow(COLOR_GRAPH, "red");
-            red.setColor(new Color(255, 0, 0));
-            SimpleGraph.DataRow green = colorGraph.getRow(COLOR_GRAPH, "green");
-            green.setColor(new Color(0, 255, 0));
-            SimpleGraph.DataRow blue = colorGraph.getRow(COLOR_GRAPH, "blue");
-            blue.setColor(new Color(0, 0, 255));
-            // Make sure the LUT is initialized.
-            initWhiteBalanceLut();
-            Mat lut = this.lut;
-            byte[] data = new byte[3];
-            for (int i = 0; i < 256; i++) {
-                lut.get(i, 0, data);
-                // BGR indexed.
-                red.recordDataPoint(i, Byte.toUnsignedInt(data[2]));
-                green.recordDataPoint(i, Byte.toUnsignedInt(data[1]));
-                blue.recordDataPoint(i, Byte.toUnsignedInt(data[0]));
-            }
-            return colorGraph;
-        }
-    }
-
-    public void resetWhiteBalance() throws Exception {
-        setRedBalance(1.0);
-        setGreenBalance(1.0);
-        setBlueBalance(1.0);
-        setRedGamma(1.0);
-        setGreenGamma(1.0);
-        setBlueGamma(1.0);
-        resetColorMaps();
-    }
-
-    protected void resetColorMaps() {
-        redColorMap = null;
-        greenColorMap = null;
-        blueColorMap = null;
-        if (lut != null) {
-            lut.release();
-            lut = null;
-        }
     }
 
     private Mat crop(Mat mat) {
@@ -951,23 +498,32 @@ public abstract class ReferenceCamera extends AbstractBroadcastingCamera impleme
             return mat;
         }
 
-        // See:
-        // http://stackoverflow.com/questions/22041699/rotate-an-image-without-cropping-in-opencv-in-c
+//        // See:
+//        // http://stackoverflow.com/questions/22041699/rotate-an-image-without-cropping-in-opencv-in-c
+//        Point center = new Point(mat.width() / 2D, mat.height() / 2D);
+//        Mat mapMatrix = Imgproc.getRotationMatrix2D(center, rotation, 1.0);
+//
+//        // determine bounding rectangle
+//        Rect bbox = new RotatedRect(center, mat.size(), rotation).boundingRect();
+//        // adjust transformation matrix
+//        double[] cx = mapMatrix.get(0, 2);
+//        double[] cy = mapMatrix.get(1, 2);
+//        cx[0] += bbox.width / 2D - center.x;
+//        cy[0] += bbox.height / 2D - center.y;
+//        mapMatrix.put(0, 2, cx);
+//        mapMatrix.put(1, 2, cy);
+//
+//        Mat dst = new Mat(bbox.width, bbox.height, mat.type());
+//        Imgproc.warpAffine(mat, dst, mapMatrix, bbox.size(), Imgproc.INTER_LINEAR);
+//        mat.release();
+        
+
+        // Rotate with image crop
         Point center = new Point(mat.width() / 2D, mat.height() / 2D);
         Mat mapMatrix = Imgproc.getRotationMatrix2D(center, rotation, 1.0);
 
-        // determine bounding rectangle
-        Rect bbox = new RotatedRect(center, mat.size(), rotation).boundingRect();
-        // adjust transformation matrix
-        double[] cx = mapMatrix.get(0, 2);
-        double[] cy = mapMatrix.get(1, 2);
-        cx[0] += bbox.width / 2D - center.x;
-        cy[0] += bbox.height / 2D - center.y;
-        mapMatrix.put(0, 2, cx);
-        mapMatrix.put(1, 2, cy);
-
-        Mat dst = new Mat(bbox.width, bbox.height, mat.type());
-        Imgproc.warpAffine(mat, dst, mapMatrix, bbox.size(), Imgproc.INTER_LINEAR);
+        Mat dst = new Mat(mat.width(), mat.height(), mat.type());
+        Imgproc.warpAffine(mat, dst, mapMatrix, mat.size(), Imgproc.INTER_LINEAR);
         mat.release();
 
         mapMatrix.release();
@@ -1064,7 +620,7 @@ public abstract class ReferenceCamera extends AbstractBroadcastingCamera impleme
     }
 
     private Mat calibrate(Mat mat) {
-        if (!isCalibrating()) {
+        if (!calibrating) {
             return mat;
         }
 
@@ -1105,10 +661,6 @@ public abstract class ReferenceCamera extends AbstractBroadcastingCamera impleme
         return appliedMat;
     }
 
-    public boolean isCalibrating() {
-        return calibrating;
-    }
-
     protected void clearCalibrationCache() {
         // Clear the calibration cache
         if (undistortionMap1 != null) {
@@ -1125,12 +677,15 @@ public abstract class ReferenceCamera extends AbstractBroadcastingCamera impleme
         this.calibrationCallback = callback;
         calibration.setEnabled(false);
         lensCalibration = new LensCalibration(LensModel.Pinhole, Pattern.AsymmetricCirclesGrid, 4,
-                11, 15, 750);
+                9, 15, 2000);
+//        lensCalibration = new LensCalibration(LensModel.Pinhole, Pattern.AsymmetricCirclesGrid, 4,
+//                11, 15, 750);
+        Logger.debug("Starting calibration");
         calibrating = true;
     }
 
     public void cancelCalibration() {
-        if (isCalibrating()) {
+        if (calibrating) {
             lensCalibration.close();
         }
         calibrating = false;
@@ -1142,21 +697,14 @@ public abstract class ReferenceCamera extends AbstractBroadcastingCamera impleme
 
     @Override
     public PropertySheet[] getPropertySheets() {
-        PropertySheet[] sheets = new PropertySheet[] {
+        return new PropertySheet[] {
                 new PropertySheetWizardAdapter(new CameraConfigurationWizard(this), "General Configuration"),
-                new PropertySheetWizardAdapter(new CameraVisionConfigurationWizard(this), "Camera Settling"),
+                new PropertySheetWizardAdapter(new CameraVisionConfigurationWizard(this), "Vision"),
                 new PropertySheetWizardAdapter(getConfigurationWizard(), "Device Settings"),
-                new PropertySheetWizardAdapter(new ReferenceCameraWhiteBalanceConfigurationWizard(this), "White Balance"),
                 new PropertySheetWizardAdapter(new ReferenceCameraPositionConfigurationWizard(getMachine(), this), "Position"),
                 new PropertySheetWizardAdapter(new ReferenceCameraCalibrationConfigurationWizard(this), "Lens Calibration"),
-                new PropertySheetWizardAdapter(new ReferenceCameraTransformsConfigurationWizard(this), "Image Transforms")
+                new PropertySheetWizardAdapter(new ReferenceCameraTransformsConfigurationWizard(this), "Image Transforms"),
         };
-        if (getFocusSensingMethod() != FocusSensingMethod.None) {
-                sheets = Collect.concat(sheets, new PropertySheet[] {
-                        new PropertySheetWizardAdapter(getFocusProvider().getConfigurationWizard(this), "Auto Focus"),
-                });
-        }
-        return sheets;
     }
     
     @Override
@@ -1193,7 +741,7 @@ public abstract class ReferenceCamera extends AbstractBroadcastingCamera impleme
             }
         }
     };
-
+    
     ReferenceMachine getMachine() {
         return (ReferenceMachine) Configuration.get().getMachine();
     }
@@ -1255,96 +803,100 @@ public abstract class ReferenceCamera extends AbstractBroadcastingCamera impleme
     }
 
     @Override
-    public void findIssues(Solutions solutions) {
-        super.findIssues(solutions);
-        if (solutions.isTargeting(Milestone.Vision)) {
-            if (getLooking() == Looking.Up
-                    && isFlipX() == isFlipY()
-                    && ! (this instanceof SimulatedUpCamera)) {
-                solutions.add(new Solutions.PlainIssue(
-                        this, 
-                        "An up-looking camera should usually mirror the image.", 
-                        "Enable either Flip X or Flip Y (but not both) in the camera's Image Transforms.", 
-                        Severity.Warning,
-                        "https://github.com/openpnp/openpnp/wiki/Setup-and-Calibration:-General-Camera-Setup#set-rotation-and-transforms"));
-            }
-            /*duplicate
-            if (getUnitsPerPixel().getX() == 0 && getUnitsPerPixel().getY() == 0) {
-                solutions.add(new Solutions.PlainIssue(
-                        this, 
-                        "Units per pixel are not yet set.", 
-                        "Perform the Units Per Pixel measurement in the General Configuration tab .", 
-                        Severity.Error,
-                        "https://github.com/openpnp/openpnp/wiki/Setup-and-Calibration:-General-Camera-Setup#set-units-per-pixel"));
-            }
-            */
-            final double previewFps = getPreviewFps();
-            if (previewFps > 15) {
-                solutions.add(new Solutions.Issue(
-                        this, 
-                        "A high Preview FPS value might create undue CPU load.", 
-                        "Set to 5 FPS.", 
-                        Severity.Suggestion,
-                        "https://github.com/openpnp/openpnp/wiki/Setup-and-Calibration:-General-Camera-Setup#general-configuration") {
+    public void findIssues(List<Solutions.Issue> issues) {
+        super.findIssues(issues);
+        if (getLooking() == Looking.Up
+                && isFlipX() == isFlipY()
+                && ! (this instanceof SimulatedUpCamera)) {
+            issues.add(new Solutions.PlainIssue(
+                    this, 
+                    "An up-looking camera should usually mirror the image.", 
+                    "Enable either Flip X or Flip Y (but not both) in the camera's Image Transforms.", 
+                    Severity.Warning,
+                    "https://github.com/openpnp/openpnp/wiki/Setup-and-Calibration:-General-Camera-Setup#set-rotation-and-transforms"));
+        }
+        if (getUnitsPerPixel().getX() == 0 && getUnitsPerPixel().getY() == 0) {
+            issues.add(new Solutions.PlainIssue(
+                    this, 
+                    "Units per pixel are not yet set.", 
+                    "Perform the Units Per Pixel measurement in the General Configuration tab .", 
+                    Severity.Error,
+                    "https://github.com/openpnp/openpnp/wiki/Setup-and-Calibration:-General-Camera-Setup#set-units-per-pixel"));
+        }
+        final double previewFps = getPreviewFps();
+        if (previewFps > 15) {
+            issues.add(new Solutions.Issue(
+                    this, 
+                    "A high Preview FPS value might create undue CPU load.", 
+                    "Set to 5 FPS.", 
+                    Severity.Suggestion,
+                    "https://github.com/openpnp/openpnp/wiki/Setup-and-Calibration:-General-Camera-Setup#general-configuration") {
+                
 
-
-                    @Override
-                    public void setState(Solutions.State state) throws Exception {
+                @Override
+                public void setState(Solutions.State state) throws Exception {
+                    if (confirmStateChange(state)) {
                         setPreviewFps((state == Solutions.State.Solved) ? 5.0 : previewFps);
                         super.setState(state);
                     }
-                });
-            }
-            if (! isSuspendPreviewInTasks()) {
-                solutions.add(new Solutions.Issue(
-                        this, 
-                        "It is recommended to suspend camera preview during machine tasks / Jobs.", 
-                        "Enable Suspend during tasks.", 
-                        Severity.Suggestion,
-                        "https://github.com/openpnp/openpnp/wiki/Setup-and-Calibration:-General-Camera-Setup#general-configuration") {
+                }
+            });
+        }
+        if (! isSuspendPreviewInTasks()) {
+            issues.add(new Solutions.Issue(
+                    this, 
+                    "It is recommended to suspend camera preview during machine tasks / Jobs.", 
+                    "Enable Suspend during tasks.", 
+                    Severity.Suggestion,
+                    "https://github.com/openpnp/openpnp/wiki/Setup-and-Calibration:-General-Camera-Setup#general-configuration") {
 
-                    @Override
-                    public void setState(Solutions.State state) throws Exception {
+                @Override
+                public void setState(Solutions.State state) throws Exception {
+                    if (confirmStateChange(state)) {
                         setSuspendPreviewInTasks((state == Solutions.State.Solved));
                         super.setState(state);
                     }
-                });
-            }
-            if (! isAutoVisible()) {
-                solutions.add(new Solutions.Issue(
-                        this, 
-                        "In single camera preview OpenPnP can automatically switch the camera for you.", 
-                        "Enable Auto Camera View.", 
-                        Severity.Suggestion,
-                        "https://github.com/openpnp/openpnp/wiki/Setup-and-Calibration:-General-Camera-Setup#general-configuration") {
+                }
+            });
+        }
+        if (! isAutoVisible()) {
+            issues.add(new Solutions.Issue(
+                    this, 
+                    "In single camera preview OpenPnP can automatically switch the camera for you.", 
+                    "Enable Auto Camera View.", 
+                    Severity.Suggestion,
+                    "https://github.com/openpnp/openpnp/wiki/Setup-and-Calibration:-General-Camera-Setup#general-configuration") {
 
-                    @Override
-                    public void setState(Solutions.State state) throws Exception {
+                @Override
+                public void setState(Solutions.State state) throws Exception {
+                    if (confirmStateChange(state)) {
                         setAutoVisible((state == Solutions.State.Solved));
                         super.setState(state);
                     }
-                });
-            }
-            CameraPanel cameraPanel = MainFrame.get().getCameraViews();
-            CameraView view = cameraPanel.getCameraView(this);
-            if (view != null) {
-                final RenderingQuality renderingQuality = view.getRenderingQuality();
-                if (renderingQuality.ordinal() < RenderingQuality.High.ordinal()) {
-                    solutions.add(new Solutions.Issue(
-                            this, 
-                            "The preview rendering quality can be improved.", 
-                            "Set to Rendering Quality to High (right click the Camera View to see other options).", 
-                            Severity.Suggestion,
-                            "https://github.com/openpnp/openpnp/wiki/Setup-and-Calibration:-General-Camera-Setup#camera-view-configuration") {
+                }
+            });
+        }
+        CameraPanel cameraPanel = MainFrame.get().getCameraViews();
+        CameraView view = cameraPanel.getCameraView(this);
+        if (view != null) {
+            final RenderingQuality renderingQuality = view.getRenderingQuality();
+            if (renderingQuality.ordinal() < RenderingQuality.High.ordinal()) {
+                issues.add(new Solutions.Issue(
+                        this, 
+                        "The preview rendering quality can be improved.", 
+                        "Set to Rendering Quality to High (right click the Camera View to see other options).", 
+                        Severity.Suggestion,
+                        "https://github.com/openpnp/openpnp/wiki/Setup-and-Calibration:-General-Camera-Setup#camera-view-configuration") {
 
-                        @Override
-                        public void setState(Solutions.State state) throws Exception {
+                    @Override
+                    public void setState(Solutions.State state) throws Exception {
+                        if (confirmStateChange(state)) {
                             view.setRenderingQuality((state == Solutions.State.Solved) ? RenderingQuality.High : renderingQuality);
                             cameraViewHasChanged(null);
                             super.setState(state);
                         }
-                    });
-                }
+                    }
+                });
             }
         }
     }
@@ -1388,54 +940,42 @@ public abstract class ReferenceCamera extends AbstractBroadcastingCamera impleme
         // Disable the machine, so the driver isn't connected.
         Machine machine = Configuration.get().getMachine();
         // Find the old driver with the same Id.
-        Head cameraHead = camera.getHead();
-        List<Camera> list = (cameraHead == null ? machine.getCameras() : cameraHead.getCameras());
+        List<Camera> list = (camera.getHead() == null ? machine.getCameras() : camera.getHead().getCameras());
         Camera replaced = null;
         int index;
         for (index = 0; index < list.size(); index++) {
             if (list.get(index).getId().equals(camera.getId())) {
                 replaced = list.get(index);
-                if (cameraHead == null) {
+                if (camera instanceof AbstractBroadcastingCamera) {
+                    ((AbstractBroadcastingCamera) replaced).stop();
+                }
+                if (replaced.getHead() == null) {
                     machine.removeCamera(replaced);
                 }
                 else {
-                    cameraHead.removeCamera(replaced);
-                }
-                MainFrame.get().getCameraViews().removeCamera(replaced);
-                if (replaced instanceof AutoCloseable) {
-                    try {
-                        ((AutoCloseable) replaced).close();
-                    }
-                    catch (Exception e) {
-                        Logger.warn(e);
-                    }
+                    replaced.getHead().removeCamera(replaced);
                 }
                 break;
             }
         }
-        final int formerIndex = index;
-
-        UiUtils.messageBoxOnExceptionLater(() -> {
-            // Add the new one.
-            if (cameraHead == null) {
-                machine.addCamera(camera);
+        // Add the new one.
+        if (replaced.getHead() == null) {
+            machine.addCamera(camera);
+        }
+        else {
+            replaced.getHead().addCamera(camera);
+        }
+        // Permutate it back to the old list place (cumbersome but works).
+        for (int p = list.size()-index; p > 1; p--) {
+            if (replaced.getHead() == null) {
+                machine.permutateCamera(camera, -1);
             }
             else {
-                cameraHead.addCamera(camera);
+                replaced.getHead().permutateCamera(camera, -1);
             }
-            // Permutate it back to the old list place (cumbersome but works).
-            for (int p = list.size() - formerIndex; p > 1; p--) {
-                if (cameraHead == null) {
-                    machine.permutateCamera(camera, -1);
-                }
-                else {
-                    cameraHead.permutateCamera(camera, -1);
-                }
-            }
-            if (camera instanceof AbstractBroadcastingCamera) {
-                ((AbstractBroadcastingCamera) camera).reinitialize();
-            }
-            MainFrame.get().getCameraViews().addCamera(camera);
-        });
+        }
+        if (camera instanceof AbstractBroadcastingCamera) {
+            ((AbstractBroadcastingCamera) camera).reinitialize();
+        }
     }
 }

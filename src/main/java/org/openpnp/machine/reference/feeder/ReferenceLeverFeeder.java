@@ -26,6 +26,7 @@ import java.beans.PropertyChangeSupport;
 import java.io.File;
 import java.io.IOException;
 
+import javax.imageio.IIOException;
 import javax.imageio.ImageIO;
 import javax.swing.Action;
 
@@ -44,7 +45,7 @@ import org.openpnp.spi.Head;
 import org.openpnp.spi.Nozzle;
 import org.openpnp.spi.PropertySheetHolder;
 import org.openpnp.spi.VisionProvider;
-import org.openpnp.util.MovableUtils;
+import org.openpnp.util.Utils2D;
 import org.pmw.tinylog.Logger;
 import org.simpleframework.xml.Attribute;
 import org.simpleframework.xml.Element;
@@ -123,7 +124,7 @@ public class ReferenceLeverFeeder extends ReferenceFeeder {
 
         Head head = nozzle.getHead();
 
-        Actuator actuator = head.getActuatorByName(actuatorName);
+        Actuator actuator =  Configuration.get().getMachine().getActuatorByName(actuatorName);
 
         if (actuator == null) {
             throw new Exception(String.format("No Actuator found with name %s on feed Head %s",
@@ -133,7 +134,7 @@ public class ReferenceLeverFeeder extends ReferenceFeeder {
 		Actuator peelOffActuator = null;
 
 		if (peelOffActuatorName != null) {
-			peelOffActuator = head.getActuatorByName(peelOffActuatorName);
+			peelOffActuator =  Configuration.get().getMachine().getActuatorByName(peelOffActuatorName);
 		}
 
         head.moveToSafeZ();
@@ -153,7 +154,7 @@ public class ReferenceLeverFeeder extends ReferenceFeeder {
 		    	actuator.actuate(true);
 		    
 	            // Push the lever
-	            actuator.moveTo(feedEndLocation, feedSpeed * actuator.getHead().getMachine().getSpeed());
+	            //actuator.moveTo(feedEndLocation, feedSpeed * actuator.getHead().getMachine().getSpeed());
 		    
 			    // Start the take up actuator
 		    	if (peelOffActuator != null) {
@@ -225,9 +226,11 @@ public class ReferenceLeverFeeder extends ReferenceFeeder {
             throw new Exception("Area of Interest is required when vision is enabled.");
         }
 
+        head.moveToSafeZ();
+
         // Position the camera over the pick location.
         Logger.debug("Move camera to pick location.");
-        MovableUtils.moveToLocationAtSafeZ(camera, pickLocation);
+        camera.moveTo(pickLocation);
 
         // Move the camera to be in focus over the pick location.
         // head.moveTo(head.getX(), head.getY(), z, head.getC());
@@ -277,7 +280,7 @@ public class ReferenceLeverFeeder extends ReferenceFeeder {
         Logger.debug("negated offsetX {}, offsetY {}", offsetX, offsetY);
 
         // And convert pixels to units
-        Location unitsPerPixel = camera.getUnitsPerPixelAtZ();
+        Location unitsPerPixel = camera.getUnitsPerPixel();
         offsetX *= unitsPerPixel.getX();
         offsetY *= unitsPerPixel.getY();
 
@@ -414,11 +417,17 @@ public class ReferenceLeverFeeder extends ReferenceFeeder {
         public Vision() {
             Configuration.get().addListener(new ConfigurationListener.Adapter() {
                 @Override
-                public void configurationComplete(Configuration configuration) throws Exception {
+                public void configurationComplete(Configuration configuration) {
                     if (templateImageName != null) {
-                        File file = configuration.getResourceFile(Vision.this.getClass(),
-                                templateImageName);
-                        templateImage = ImageIO.read(file);
+                    	try {
+	                        File file = configuration.getResourceFile(Vision.this.getClass(),
+	                                templateImageName);
+	                        templateImage = ImageIO.read(file);
+                    	}
+                    	catch(IOException exception) {
+                    		enabled = false;
+                    		Logger.warn("Cannot load template image: {} ", templateImageName);
+                    	}
                     }
                 }
             });

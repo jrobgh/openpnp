@@ -28,8 +28,11 @@ import org.opencv.core.RotatedRect;
 import org.openpnp.gui.MainFrame;
 import org.openpnp.gui.support.PropertySheetWizardAdapter;
 import org.openpnp.gui.support.Wizard;
+import org.openpnp.machine.neoden4.Neoden4Camera;
+import org.openpnp.machine.reference.ReferenceCamera;
 import org.openpnp.machine.reference.ReferenceFeeder;
 import org.openpnp.machine.reference.feeder.wizards.ReferenceLoosePartFeederConfigurationWizard;
+import org.openpnp.model.Configuration;
 import org.openpnp.model.Location;
 import org.openpnp.spi.Camera;
 import org.openpnp.spi.Nozzle;
@@ -38,6 +41,7 @@ import org.openpnp.util.MovableUtils;
 import org.openpnp.util.OpenCvUtils;
 import org.openpnp.util.VisionUtils;
 import org.openpnp.vision.pipeline.CvPipeline;
+import org.pmw.tinylog.Logger;
 import org.simpleframework.xml.Element;
 
 public class ReferenceLoosePartFeeder extends ReferenceFeeder {
@@ -53,10 +57,17 @@ public class ReferenceLoosePartFeeder extends ReferenceFeeder {
 
     @Override
     public void feed(Nozzle nozzle) throws Exception {
-        Camera camera = nozzle.getHead()
-                              .getDefaultCamera();
         // Move to the feeder pick location
+        Camera camera = nozzle.getHead().getDefaultCamera();
+
+        // Only for neoden4 camera hack that change image size
+		int oldCamCropWidth = ((ReferenceCamera)camera).getCropWidth();
+		int oldCamCropHeight = ((ReferenceCamera)camera).getCropHeight();
+		((ReferenceCamera)camera).setCropWidth(1024);
+		((ReferenceCamera)camera).setCropHeight(1024);  
+        
         MovableUtils.moveToLocationAtSafeZ(camera, location);
+        
         try (CvPipeline pipeline = getPipeline()) {
             for (int i = 0; i < 3; i++) {
                 pickLocation = getPickLocation(pipeline, camera, nozzle);
@@ -67,12 +78,10 @@ public class ReferenceLoosePartFeeder extends ReferenceFeeder {
                      .getCameraView(camera)
                      .showFilteredImage(OpenCvUtils.toBufferedImage(pipeline.getWorkingImage()),
                              1000);
-        }
-    }
-
-    @Override
-    public boolean isPartHeightAbovePickLocation() {
-        return true;
+		} finally {
+			((ReferenceCamera)camera).setCropWidth(oldCamCropWidth);
+			((ReferenceCamera)camera).setCropHeight(oldCamCropHeight);  
+		}
     }
 
     private Location getPickLocation(CvPipeline pipeline, Camera camera, Nozzle nozzle)
@@ -100,50 +109,14 @@ public class ReferenceLoosePartFeeder extends ReferenceFeeder {
         Location location = VisionUtils.getPixelLocation(camera, result.center.x, result.center.y);
         // Update the location's rotation with the result's angle
         location = location.derive(null, null, null, result.angle + this.location.getRotation());
-        // Update the location with the correct Z, which is the configured Location's Z.
-        double z = this.location.convertToUnits(location.getUnits()).getZ(); 
+        // Update the location with the correct Z, which is the configured Location's Z
+        // plus the part height.
+        double z = this.location.convertToUnits(location.getUnits()).getZ()
+                + part.getHeight().convertToUnits(location.getUnits()).getValue(); 
         location = location.derive(null, null, z, null);
         return location;
     }
 
-    /**
-     * Returns if the feeder can take back a part.
-     * Makes the assumption, that after each feed a pick followed,
-     * so the area around the pickLocation is now empty.
-     */
-    @Override
-    public boolean canTakeBackPart() {
-        if (pickLocation != null ) {  
-            return true;
-        } else {
-            return false;
-        }
-    }
-
-    @Override
-    public void takeBackPart(Nozzle nozzle) throws Exception {
-        // first check if we can and want to take back this part (should be always be checked before calling, but to be sure)
-        if (nozzle.getPart() == null) {
-            throw new UnsupportedOperationException("No part loaded that could be taken back.");
-        }
-        if (!nozzle.getPart().equals(getPart())) {
-            throw new UnsupportedOperationException("Feeder: " + getName() + " - Can not take back " + nozzle.getPart().getName() + " this feeder only supports " + getPart().getName());
-        }
-        if (!canTakeBackPart()) {
-            throw new UnsupportedOperationException("Feeder: " + getName() + " - Currently no known free space. Can not take back the part.");
-        }
-
-        // ok, now put the part back on the location of the last pick
-        nozzle.moveToPickLocation(this);
-        nozzle.place();
-        nozzle.moveToSafeZ();
-        if (nozzle.isPartOffEnabled(Nozzle.PartOffStep.AfterPlace) && !nozzle.isPartOff()) {
-            throw new Exception("Feeder: " + getName() + " - Putting part back failed, check nozzle tip");
-        }
-        // set pickLocation to null, avoid putting a second part on the same location
-        pickLocation = null;
-    }
-    
     public CvPipeline getPipeline() {
         return pipeline;
     }

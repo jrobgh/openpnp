@@ -23,16 +23,23 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
 import javax.swing.Action;
 
 import org.openpnp.ConfigurationListener;
+import org.openpnp.gui.MainFrame;
 import org.openpnp.gui.support.PropertySheetWizardAdapter;
 import org.openpnp.gui.support.Wizard;
 import org.openpnp.machine.neoden4.NeoDen4Driver;
+import org.openpnp.machine.neoden4.NeoDen4FeederActuator;
 import org.openpnp.machine.neoden4.Neoden4Camera;
+import org.openpnp.machine.neoden4.Neoden4Feeder;
+import org.openpnp.machine.neoden4.Neoden4Signaler;
+import org.openpnp.machine.neoden4.Neoden4SwitcherCamera;
 import org.openpnp.machine.rapidplacer.RapidFeeder;
 import org.openpnp.machine.reference.actuator.ThermistorToLinearSensorActuator;
 import org.openpnp.machine.reference.axis.ReferenceCamClockwiseAxis;
@@ -58,7 +65,6 @@ import org.openpnp.machine.reference.feeder.AdvancedLoosePartFeeder;
 import org.openpnp.machine.reference.feeder.BlindsFeeder;
 import org.openpnp.machine.reference.feeder.ReferenceAutoFeeder;
 import org.openpnp.machine.reference.feeder.ReferenceDragFeeder;
-import org.openpnp.machine.reference.feeder.ReferenceHeapFeeder;
 import org.openpnp.machine.reference.feeder.ReferenceLeverFeeder;
 import org.openpnp.machine.reference.feeder.ReferenceLoosePartFeeder;
 import org.openpnp.machine.reference.feeder.ReferencePushPullFeeder;
@@ -77,15 +83,14 @@ import org.openpnp.machine.reference.psh.NozzleTipsPropertySheetHolder;
 import org.openpnp.machine.reference.psh.SignalersPropertySheetHolder;
 import org.openpnp.machine.reference.signaler.ActuatorSignaler;
 import org.openpnp.machine.reference.signaler.SoundSignaler;
-import org.openpnp.machine.reference.solutions.CalibrationSolutions;
-import org.openpnp.machine.reference.solutions.KinematicSolutions;
-import org.openpnp.machine.reference.solutions.VisionSolutions;
 import org.openpnp.machine.reference.vision.ReferenceBottomVision;
 import org.openpnp.machine.reference.vision.ReferenceFiducialLocator;
 import org.openpnp.machine.reference.wizards.ReferenceMachineConfigurationWizard;
+import org.openpnp.machine.reference.wizards.ReferenceMachineSolutionsWizard;
 import org.openpnp.model.Configuration;
 import org.openpnp.model.Solutions;
-import org.openpnp.model.Solutions.Milestone;
+import org.openpnp.model.Solutions.Issue;
+import org.openpnp.model.Solutions.Severity;
 import org.openpnp.spi.Actuator;
 import org.openpnp.spi.Axis;
 import org.openpnp.spi.Camera;
@@ -129,16 +134,14 @@ public class ReferenceMachine extends AbstractMachine {
     @Attribute(required = false)
     private boolean autoToolSelect = true;
 
-    @Element(required = false)
-    private Solutions solutions = new Solutions();
-
-    @Deprecated // now in the Solutions object.
     @ElementList(required = false)
-    Set<String> dismissedSolutions = null;
+    Set<String> dismissedSolutions = new HashSet<>();
 
     private boolean enabled;
 
     private boolean isHomed = false;
+
+    private Solutions solutions = new Solutions();
 
     private List<Class<? extends Axis>> registeredAxisClasses = new ArrayList<>();
 
@@ -249,9 +252,7 @@ public class ReferenceMachine extends AbstractMachine {
     }
 
     public void setMotionPlanner(MotionPlanner motionPlanner) {
-        Object oldValue = this.motionPlanner;
         this.motionPlanner = motionPlanner;
-        firePropertyChange("motionPlanner", oldValue, motionPlanner);
     }
 
     @Override
@@ -307,6 +308,7 @@ public class ReferenceMachine extends AbstractMachine {
     public PropertySheet[] getPropertySheets() {
         return Collect.concat(new PropertySheet[] { 
                     new PropertySheetWizardAdapter(getConfigurationWizard()),
+                    new PropertySheetWizardAdapter(new ReferenceMachineSolutionsWizard(this), "Issues & Solutions")
                 },
                 getMotionPlanner().getPropertySheets());
     }
@@ -341,11 +343,11 @@ public class ReferenceMachine extends AbstractMachine {
         l.add(ReferenceSlotAutoFeeder.class);
         l.add(ReferenceLoosePartFeeder.class);
         l.add(AdvancedLoosePartFeeder.class);
-        l.add(ReferenceHeapFeeder.class);
         l.add(BlindsFeeder.class);
         l.add(SchultzFeeder.class);
         l.add(SlotSchultzFeeder.class);
         l.add(RapidFeeder.class);
+        l.add(Neoden4Feeder.class);
         l.addAll(registeredFeederClasses);
         return l;
     }
@@ -353,9 +355,10 @@ public class ReferenceMachine extends AbstractMachine {
     @Override
     public List<Class<? extends Camera>> getCompatibleCameraClasses() {
         List<Class<? extends Camera>> l = new ArrayList<>();
+        l.add(Neoden4Camera.class);
+        l.add(Neoden4SwitcherCamera.class);
         l.add(OpenPnpCaptureCamera.class);
         l.add(OpenCvCamera.class);
-        l.add(Neoden4Camera.class);
         l.add(Webcams.class);
         l.add(OnvifIPCamera.class);
         l.add(ImageCamera.class);
@@ -380,6 +383,7 @@ public class ReferenceMachine extends AbstractMachine {
         l.add(HttpActuator.class);
         l.add(ScriptActuator.class);
         l.add(ThermistorToLinearSensorActuator.class);
+        l.add(NeoDen4FeederActuator.class);
         return l;
     }
 
@@ -388,6 +392,7 @@ public class ReferenceMachine extends AbstractMachine {
         List<Class<? extends Signaler>> l = new ArrayList<>();
         l.add(SoundSignaler.class);
         l.add(ActuatorSignaler.class);
+        l.add(Neoden4Signaler.class);
         return l;
     }
 
@@ -421,11 +426,23 @@ public class ReferenceMachine extends AbstractMachine {
             // if one rehomes, the isHomed flag has to be removed
             this.setHomed(false);
         }
+        
+        try {
+            Configuration.get().getScripting().on("Machine.BeforeHoming", null);
+        }
+        catch (Exception e) {
+            Logger.warn(e);
+        }
 
         getMotionPlanner().home();
         super.home();
 
-        Configuration.get().getScripting().on("Machine.AfterHoming", null);
+        try {
+            Configuration.get().getScripting().on("Machine.AfterHoming", null);
+        }
+        catch (Exception e) {
+            Logger.warn(e);
+        }
 
         // if homing went well, set machine homed-flag true
         this.setHomed(true);     
@@ -483,6 +500,11 @@ public class ReferenceMachine extends AbstractMachine {
     public boolean isHomed() {
         return this.isHomed;
     }
+
+    public Solutions getSolutions() {
+        return solutions;
+    }
+
     @Override
     public void setHomed(boolean isHomed) {
         Logger.info("setHomed({})", isHomed);
@@ -491,100 +513,35 @@ public class ReferenceMachine extends AbstractMachine {
         fireMachineHomed(isHomed);
     }
 
-    public Solutions getSolutions() {
-        if (dismissedSolutions != null) {
-            // Migrate to Solutions object.
-            solutions.migrateDismissedSolutions(dismissedSolutions);
-            dismissedSolutions = null;
-        }
-        return solutions;
-    }
-
-    //@Element(required = false)
-    private KinematicSolutions kinematicSolutions = new KinematicSolutions(); 
-
-    @Element(required = false)
-    private VisionSolutions visualSolutions = new VisionSolutions();
-
-    public VisionSolutions getVisionSolutions() {
-        return visualSolutions;
-    }
-
-    @Element(required = false)
-    private CalibrationSolutions calibrationSolutions = new CalibrationSolutions(); 
-
-    public CalibrationSolutions getCalibrationSolutions() {
-        return calibrationSolutions;
-    }
-
     @Override
-    public void findIssues(Solutions solutions) {
-        kinematicSolutions.setMachine(this).findIssues(solutions);
-        visualSolutions.setMachine(this).findIssues(solutions);
-        calibrationSolutions.setMachine(this).findIssues(solutions);
+    public void findIssues(List<Solutions.Issue> issues) {
+        if (getMotionPlanner() instanceof NullMotionPlanner) {
+            issues.add(new Solutions.Issue(
+                    this, 
+                    "Advanced Motion Planner not set. Accept or Dismiss to continue.", 
+                    "Change to ReferenceAdvancedMotionPlanner", 
+                    Solutions.Severity.Fundamental,
+                    "https://github.com/openpnp/openpnp/wiki/Motion-Planner#choosing-a-motion-planner") {
+                final MotionPlanner oldMotionPlanner =  ReferenceMachine.this.getMotionPlanner();
 
-        if (solutions.isTargeting(Milestone.Advanced)) {
-            if (getMotionPlanner() instanceof NullMotionPlanner) {
-                solutions.add(new Solutions.Issue(
-                        this, 
-                        "Advanced Motion Planner not set. Accept or Dismiss to continue.", 
-                        "Change to ReferenceAdvancedMotionPlanner", 
-                        Solutions.Severity.Fundamental,
-                        "https://github.com/openpnp/openpnp/wiki/Motion-Planner#choosing-a-motion-planner") {
-                    final MotionPlanner oldMotionPlanner =  ReferenceMachine.this.getMotionPlanner();
-
-                    @Override
-                    public void setState(Solutions.State state) throws Exception {
+                @Override
+                public void setState(Solutions.State state) throws Exception {
+                    if (confirmStateChange(state)) {
                         if ((state == Solutions.State.Solved)) {
                             setMotionPlanner(new ReferenceAdvancedMotionPlanner());
                         } 
                         else {
                             setMotionPlanner(oldMotionPlanner);
                         }
+                        // Reselect the tree path to reload the wizard with potentially different property sheets. 
+                        MainFrame.get().getMachineSetupTab().selectCurrentTreePath();
                         super.setState(state);
                     }
-                });
-            }
+                }
+            });
         }
-        else {
-            // Conservative settings.
-            if (!(getMotionPlanner() instanceof NullMotionPlanner)) {
-                solutions.add(new Solutions.Issue(
-                        this, 
-                        "Advanced motion planner set. Revert to a simpler, safer planner.", 
-                        "Change to NullMotionPlanner", 
-                        Solutions.Severity.Information,
-                        "https://github.com/openpnp/openpnp/wiki/Motion-Planner#choosing-a-motion-planner") {
-                    final MotionPlanner oldMotionPlanner =  ReferenceMachine.this.getMotionPlanner();
-
-                    @Override
-                    public boolean isUnhandled( ) {
-                        // Never handle a conservative solution as unhandled.
-                        return false;
-                    }
-
-                    @Override 
-                    public String getExtendedDescription() {
-                        return "<html><span color=\"red\">CAUTION:</span> This is a troubleshooting option, offered to remove the ReferenceAdvancedMotionPlanner "
-                                + "if it causes problems, or if you don't want it after all. Going back to the plain NullPlanner will lose you all the "
-                                + "advanced configuration.</html>";
-                    }
-
-                    @Override
-                    public void setState(Solutions.State state) throws Exception {
-                        if ((state == Solutions.State.Solved)) {
-                            setMotionPlanner(new NullMotionPlanner());
-                        } 
-                        else {
-                            setMotionPlanner(oldMotionPlanner);
-                        }
-                        super.setState(state);
-                    }
-                });
-            }
-        }
-        if (solutions.isTargeting(Milestone.Basics) && ! isAutoToolSelect()) {
-            solutions.add(new Solutions.Issue(
+        if (! isAutoToolSelect()) {
+            issues.add(new Solutions.Issue(
                     this, 
                     "OpenPnP can often automatically select the right tool for you in Machine Controls.", 
                     "Enable Auto tool select.", 
@@ -593,11 +550,74 @@ public class ReferenceMachine extends AbstractMachine {
 
                 @Override
                 public void setState(Solutions.State state) throws Exception {
-                    setAutoToolSelect((state == Solutions.State.Solved));
-                    super.setState(state);
+                    if (confirmStateChange(state)) {
+                        setAutoToolSelect((state == Solutions.State.Solved));
+                        super.setState(state);
+                    }
                 }
             });
         }
-        super.findIssues(solutions);
+        super.findIssues(issues);
+    }
+
+    public void setSolutionsIssues(List<Issue> issues) {
+        if (issues.size() == 0) {
+            issues.add(new Solutions.Issue(
+                    this, 
+                    "No issues detected.", 
+                    "", 
+                    Solutions.Severity.Information,
+                    null));
+        }
+        // Go through the issues and set initially dismissed ones.
+        // Also install listeners to update the dismissedTroubleshooting.
+        for (Issue issue : issues) {
+            if (isSolutionsIssueDismissed(issue)) {
+                issue.setInitiallyDismissed();
+            }
+            issue.addPropertyChangeListener("state", e -> {
+                if (e.getOldValue() == Solutions.State.Dismissed) {
+                    setSolutionsIssueDismissed(issue, false);
+                }
+                if (issue.getState() == Solutions.State.Dismissed) {
+                    setSolutionsIssueDismissed(issue, true);
+                }
+                int row = solutions.getIssues().indexOf(issue);
+                solutions.fireTableRowsUpdated(row, row);
+            });
+        }
+        // Sort by state (initially only Open and Dismissed possible) and place Fundamentals first.
+        issues.sort(new Comparator<Issue>() {
+            @Override
+            public int compare(Issue o1, Issue o2) {
+                int d = o1.getState().ordinal() - o2.getState().ordinal();
+                if (d != 0) {
+                    return d;
+                }
+                if (o1.getSeverity() == Severity.Fundamental && o2.getSeverity() != Severity.Fundamental) {
+                    return -1;
+                }
+                else if (o2.getSeverity() == Severity.Fundamental) {
+                    return 1;
+                }
+                else {
+                    return 0;
+                }
+            }
+        });
+        // Finally set the issues.
+        getSolutions().setIssues(issues);
+    }
+
+    public boolean isSolutionsIssueDismissed(Issue issue) {
+        return dismissedSolutions.contains(issue.getFingerprint());
+    }
+    public void setSolutionsIssueDismissed(Issue issue, boolean dismissed) {
+        if (dismissed) {
+            dismissedSolutions.add(issue.getFingerprint()); 
+        }
+        else {
+            dismissedSolutions.remove(issue.getFingerprint());
+        }
     }
 }
